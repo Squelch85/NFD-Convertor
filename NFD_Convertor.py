@@ -118,7 +118,8 @@ class BatchConverterApp(TkinterDnD.Tk):
         self._clear_list(clear_roots=False)
         self.all_paths.clear()
         if not self.drop_roots:
-            self.info_label.pack(pady=(20, 0))
+            # Ensure guidance label reappears above the tree
+            self.info_label.pack(pady=(20, 0), before=self.tree)
             return
         else:
             self.info_label.pack_forget()
@@ -180,7 +181,8 @@ class BatchConverterApp(TkinterDnD.Tk):
         if clear_roots:
             self.drop_roots.clear()
         if not self.drop_roots:
-            self.info_label.pack(pady=(20, 0))
+            # Repack guidance label above tree when list becomes empty
+            self.info_label.pack(pady=(20, 0), before=self.tree)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='NFD를 NFC로 변환하는 도구')
