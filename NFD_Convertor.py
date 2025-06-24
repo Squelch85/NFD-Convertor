@@ -1,14 +1,57 @@
 import os
 import unicodedata
+import argparse
+import types
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-# tkinterdnd2 is required for native drag-and-drop support
-# Install with: pip install tkinterdnd2
+
+def preprocess_name(name: str) -> str:
+    """Normalize and sanitize a filename."""
+    base, ext = os.path.splitext(name)
+    processed = base.replace(" ", "_").lower() + ext
+    return unicodedata.normalize("NFC", processed)
+
+
+def _gather_paths(paths):
+    """Return a flattened list of all files and folders under given paths."""
+    result = []
+    for p in paths:
+        if os.path.isdir(p):
+            for root, dirs, files in os.walk(p):
+                for d in dirs:
+                    result.append(os.path.join(root, d))
+                for f in files:
+                    result.append(os.path.join(root, f))
+        else:
+            result.append(p)
+    return result
+
+
+def convert_cli(paths):
+    """Convert paths in command line mode."""
+    all_paths = _gather_paths(paths)
+    total = len(all_paths)
+    for idx, oldpath in enumerate(sorted(all_paths, key=lambda p: p.count(os.sep), reverse=True), 1):
+        parent = os.path.dirname(oldpath)
+        original = os.path.basename(oldpath)
+        new_name = preprocess_name(original)
+        newpath = os.path.join(parent, new_name)
+        if oldpath != newpath:
+            os.rename(oldpath, newpath)
+        print(f"[{idx}/{total}] {oldpath} -> {newpath}")
+    print("Done.")
+
+# tkinterdnd2 is required for native drag-and-drop support. When it is not
+# available (such as in testing environments), fall back to the standard Tk
+# class so that CLI functionality still works.
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
-except ImportError:
-    raise ImportError("Please install tkinterdnd2: pip install tkinterdnd2")
+except ImportError:  # pragma: no cover - optional dependency
+    DND_FILES = "DND_Files"
+    class _DummyTk(tk.Tk):
+        pass
+    TkinterDnD = types.SimpleNamespace(Tk=_DummyTk)
 
 class BatchConverterApp(TkinterDnD.Tk):
     def __init__(self):
@@ -45,8 +88,10 @@ class BatchConverterApp(TkinterDnD.Tk):
         btn_frame.pack(fill='x', padx=10, pady=(0,10))
         self.convert_btn = ttk.Button(btn_frame, text="Convert to NFC", command=self._convert_all)
         self.clear_btn = ttk.Button(btn_frame, text="Clear List", command=self._clear_list)
+        self.progress = ttk.Progressbar(btn_frame, mode='determinate')
         self.convert_btn.pack(side='left', padx=(0,5))
         self.clear_btn.pack(side='left')
+        self.progress.pack(fill='x', expand=True, padx=10, side='right')
 
     def _split_paths(self, data):
         return [p.strip() for p in self.tk.splitlist(data)]
@@ -78,32 +123,34 @@ class BatchConverterApp(TkinterDnD.Tk):
             except PermissionError:
                 pass
 
-    def _preprocess_name(self, name):
-        base, ext = os.path.splitext(name)
-        processed = base.replace(' ', '_').lower() + ext
-        return unicodedata.normalize('NFC', processed)
 
     def _convert_all(self):
         if not self.all_paths:
             messagebox.showwarning("No items", "Please drop items first.")
             return
         # Rename from deepest paths first
-        for oldpath in sorted(self.all_paths, key=lambda p: p.count(os.sep), reverse=True):
+        total = len(self.all_paths)
+        self.progress.configure(maximum=total, value=0)
+        for idx, oldpath in enumerate(sorted(self.all_paths, key=lambda p: p.count(os.sep), reverse=True), 1):
             parent = os.path.dirname(oldpath)
             original = os.path.basename(oldpath)
-            new_name = self._preprocess_name(original)
+            new_name = preprocess_name(original)
             newpath = os.path.join(parent, new_name)
             if oldpath != newpath:
                 try:
                     os.rename(oldpath, newpath)
                     # update drop_roots if needed
                     if oldpath in self.drop_roots:
-                        idx = self.drop_roots.index(oldpath)
-                        self.drop_roots[idx] = newpath
+                        ridx = self.drop_roots.index(oldpath)
+                        self.drop_roots[ridx] = newpath
                 except Exception as e:
                     messagebox.showerror("Error", f"Failed to convert '{oldpath}': {e}")
+                    self.progress['value'] = 0
                     return
+            self.progress['value'] = idx
+            self.update_idletasks()
         messagebox.showinfo("Done", "All items have been normalized to NFC.")
+        self.progress['value'] = 0
         self._refresh_tree()
 
     def _clear_list(self, clear_roots=True):
@@ -114,5 +161,15 @@ class BatchConverterApp(TkinterDnD.Tk):
             self.drop_roots.clear()
 
 if __name__ == '__main__':
-    app = BatchConverterApp()
-    app.mainloop()
+    parser = argparse.ArgumentParser(description='NFD to NFC filename converter')
+    parser.add_argument('paths', nargs='*', help='Files or directories to convert')
+    parser.add_argument('--cli', action='store_true', help='Run in command line mode')
+    args = parser.parse_args()
+
+    if args.cli or args.paths:
+        if not args.paths:
+            parser.error('Please provide at least one path to convert.')
+        convert_cli(args.paths)
+    else:
+        app = BatchConverterApp()
+        app.mainloop()
