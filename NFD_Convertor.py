@@ -6,11 +6,11 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 
-def preprocess_name(name: str) -> str:
+def preprocess_name(name: str, form: str = "NFC") -> str:
     """Normalize and sanitize a filename."""
     base, ext = os.path.splitext(name)
     processed = base.replace(" ", "_").lower() + ext
-    return unicodedata.normalize("NFC", processed)
+    return unicodedata.normalize(form, processed)
 
 
 def _gather_paths(paths):
@@ -28,19 +28,19 @@ def _gather_paths(paths):
     return result
 
 
-def convert_cli(paths):
+def convert_cli(paths, form: str = "NFC"):
     """Convert paths in command line mode."""
     all_paths = _gather_paths(paths)
     total = len(all_paths)
     for idx, oldpath in enumerate(sorted(all_paths, key=lambda p: p.count(os.sep), reverse=True), 1):
         parent = os.path.dirname(oldpath)
         original = os.path.basename(oldpath)
-        new_name = preprocess_name(original)
+        new_name = preprocess_name(original, form=form)
         newpath = os.path.join(parent, new_name)
         if oldpath != newpath:
             os.rename(oldpath, newpath)
         print(f"[{idx}/{total}] {oldpath} -> {newpath}")
-    print("Done.")
+    print("완료되었습니다.")
 
 # tkinterdnd2 is required for native drag-and-drop support. When it is not
 # available (such as in testing environments), fall back to the standard Tk
@@ -56,7 +56,7 @@ except ImportError:  # pragma: no cover - optional dependency
 class BatchConverterApp(TkinterDnD.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Batch File Converter (NFD→NFC)")
+        self.title("배치 파일 변환기 (NFD→NFC)")
         self.geometry("700x500")
         self.configure(bg='#2e2e2e')  # Dark background
 
@@ -72,6 +72,15 @@ class BatchConverterApp(TkinterDnD.Tk):
         style.configure('TButton', background='#4e4e4e', foreground='#ffffff')
         style.map('TButton', background=[('active', '#5e5e5e')])
 
+        # Guidance label
+        self.info_label = tk.Label(
+            self,
+            text="이곳에 파일과 폴더를 한번에 드래그하세요",
+            fg="#ffffff",
+            bg="#2e2e2e"
+        )
+        self.info_label.pack(pady=(20, 0))
+
         # Tracking dropped roots and all paths
         self.drop_roots = []  # original dropped files/folders
         self.all_paths = []   # flattened list of every file and folder path
@@ -86,10 +95,12 @@ class BatchConverterApp(TkinterDnD.Tk):
         # Control buttons
         btn_frame = tk.Frame(self, bg='#2e2e2e')
         btn_frame.pack(fill='x', padx=10, pady=(0,10))
-        self.convert_btn = ttk.Button(btn_frame, text="Convert to NFC", command=self._convert_all)
-        self.clear_btn = ttk.Button(btn_frame, text="Clear List", command=self._clear_list)
+        self.convert_btn = ttk.Button(btn_frame, text="NFC로 변환", command=self._convert_all)
+        self.revert_btn = ttk.Button(btn_frame, text="NFD로 변환", command=self._convert_all_nfd)
+        self.clear_btn = ttk.Button(btn_frame, text="목록 비우기", command=self._clear_list)
         self.progress = ttk.Progressbar(btn_frame, mode='determinate')
         self.convert_btn.pack(side='left', padx=(0,5))
+        self.revert_btn.pack(side='left', padx=(0,5))
         self.clear_btn.pack(side='left')
         self.progress.pack(fill='x', expand=True, padx=10, side='right')
 
@@ -106,6 +117,11 @@ class BatchConverterApp(TkinterDnD.Tk):
     def _refresh_tree(self):
         self._clear_list(clear_roots=False)
         self.all_paths.clear()
+        if not self.drop_roots:
+            self.info_label.pack(pady=(20, 0))
+            return
+        else:
+            self.info_label.pack_forget()
         for root in self.drop_roots:
             self._add_item(root, parent='')
 
@@ -125,31 +141,35 @@ class BatchConverterApp(TkinterDnD.Tk):
 
 
     def _convert_all(self):
+        self._rename_all("NFC")
+
+    def _convert_all_nfd(self):
+        self._rename_all("NFD")
+
+    def _rename_all(self, form: str):
         if not self.all_paths:
-            messagebox.showwarning("No items", "Please drop items first.")
+            messagebox.showwarning("항목 없음", "먼저 항목을 드래그하세요.")
             return
-        # Rename from deepest paths first
         total = len(self.all_paths)
         self.progress.configure(maximum=total, value=0)
         for idx, oldpath in enumerate(sorted(self.all_paths, key=lambda p: p.count(os.sep), reverse=True), 1):
             parent = os.path.dirname(oldpath)
             original = os.path.basename(oldpath)
-            new_name = preprocess_name(original)
+            new_name = preprocess_name(original, form=form)
             newpath = os.path.join(parent, new_name)
             if oldpath != newpath:
                 try:
                     os.rename(oldpath, newpath)
-                    # update drop_roots if needed
                     if oldpath in self.drop_roots:
                         ridx = self.drop_roots.index(oldpath)
                         self.drop_roots[ridx] = newpath
                 except Exception as e:
-                    messagebox.showerror("Error", f"Failed to convert '{oldpath}': {e}")
+                    messagebox.showerror("오류", f"'{oldpath}' 변환 실패: {e}")
                     self.progress['value'] = 0
                     return
             self.progress['value'] = idx
             self.update_idletasks()
-        messagebox.showinfo("Done", "All items have been normalized to NFC.")
+        messagebox.showinfo("완료", f"모든 항목이 {form}로 변환되었습니다.")
         self.progress['value'] = 0
         self._refresh_tree()
 
@@ -159,17 +179,21 @@ class BatchConverterApp(TkinterDnD.Tk):
         self.all_paths.clear()
         if clear_roots:
             self.drop_roots.clear()
+        if not self.drop_roots:
+            self.info_label.pack(pady=(20, 0))
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='NFD to NFC filename converter')
-    parser.add_argument('paths', nargs='*', help='Files or directories to convert')
-    parser.add_argument('--cli', action='store_true', help='Run in command line mode')
+    parser = argparse.ArgumentParser(description='NFD를 NFC로 변환하는 도구')
+    parser.add_argument('paths', nargs='*', help='변환할 파일 또는 디렉터리')
+    parser.add_argument('--cli', action='store_true', help='명령행 모드로 실행')
+    parser.add_argument('--to-nfd', action='store_true', help='NFD로 변환')
     args = parser.parse_args()
 
     if args.cli or args.paths:
         if not args.paths:
-            parser.error('Please provide at least one path to convert.')
-        convert_cli(args.paths)
+            parser.error('하나 이상의 경로를 입력하세요.')
+        form = 'NFD' if args.to_nfd else 'NFC'
+        convert_cli(args.paths, form=form)
     else:
         app = BatchConverterApp()
         app.mainloop()
